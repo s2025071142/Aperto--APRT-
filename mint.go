@@ -1,28 +1,33 @@
 package main
 
 import (
-	"math"
-
-	sdk "://github.com"
+	"://github.com"
 )
 
 // CalculateBlockSubsidy determines the miner reward for the current block height.
 // It decreases the reward gradually with every single block until hitting the tail floor.
-func CalculateBlockSubsidy(height int64) sdk.Coin {
-	initialSubsidy := float64(50 * 1000000)       // 50 coins starting block reward (in base units)
-	tailEmissionFloor := float64(0.005 * 1000000) // 0.005 coins permanent floor
+func CalculateBlockSubsidy(height int64) types.Coin {
+	// Base units representation (e.g., 1 coin = 1,000,000 base units)
+	const BaseUnit uint64 = 1000000
+	const InitialSubsidy uint64 = 50 * BaseUnit
+	const TailEmissionFloor uint64 = 5000 // 0.005 * 1,000,000 = 5,000 base units
 
-	// This decay factor controls how fast the reward shrinks. 
-	// 0.000005 means the reward drops by a tiny fraction every single block.
-	decayFactor := 0.000005 
+	// Deterministic decay calculation using integer approximation:
+	// Instead of floating-point math.Exp(-0.000005 * height), we use a fixed precision reduction loop.
+	// For a decay factor of 0.000005 per block, the remaining subsidy shrinks by factor of (1 - 5/1000000).
+	decayBasis := types.NewDec(999995).Quo(types.NewDec(1000000))
+	
+	// Compute exponential decay using Cosmos SDK's deterministic fixed-point Power function
+	remainingFactor := decayBasis.Power(uint64(height))
+	
+	// Calculate the actual current base subsidy integer value safely
+	currentSubsidyDec := types.NewDec(int64(InitialSubsidy)).Mul(remainingFactor)
+	currentSubsidy := uint64(currentSubsidyDec.TruncateInt64())
 
-	// Calculate the smooth gradual drop based on the current block height
-	currentSubsidy := initialSubsidy * math.Exp(-decayFactor * float64(height))
-
-	// If the smooth calculation drops below your floor, lock it at 0.005 forever!
-	if currentSubsidy < tailEmissionFloor {
-		currentSubsidy = tailEmissionFloor
+	// Enforce the permanent minimum tail emission subsidy floor
+	if currentSubsidy < TailEmissionFloor {
+		currentSubsidy = TailEmissionFloor
 	}
 
-	return sdk.NewCoin("native", sdk.NewInt(int64(currentSubsidy)))
+	return types.NewCoin("native", types.NewInt(int64(currentSubsidy)))
 }
