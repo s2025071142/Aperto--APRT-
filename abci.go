@@ -1,25 +1,26 @@
 package main
 
-// AdjustDynamicGasLimit calculates a moving target for the EVM execution engine.
-// It dynamically increases capacity during congestion and prevents network spam.
+// AdjustDynamicGasLimit calculates a moving capacity ceiling for the EVM block window.
+// It expands drastically during burst loads to absorb heavy post-quantum cryptographic byte footprints.
 func AdjustDynamicGasLimit(historicalAverageGas uint64) uint64 {
-	const TargetGasLimit uint64 = 30000000 
-	const MaxGrowthFactor float64 = 2.0 
+	// Expanded limits to safely process large data chunks without network congestion
+	const TargetGasLimit uint64 = 90000000 
+	const MaxGrowthFactor float64 = 4.0   
 
-	// Base case: Traffic is normal or below target limits
+	// Return baseline scale if the transaction congestion is running optimally
 	if historicalAverageGas <= TargetGasLimit {
 		return TargetGasLimit
 	}
 
-	// Calculate the surge ratio of network demand
+	// Compute scaling coefficients accurately based on payload pressures
 	demandRatio := float64(historicalAverageGas) / float64(TargetGasLimit)
 	
-	// Enforce growth boundary to stabilize maximum execution footprints
+	// Caps limits strictly to ensure block computation footprints remain sustainable for nodes
 	if demandRatio > MaxGrowthFactor {
 		demandRatio = MaxGrowthFactor
 	}
 
-	// Scale gas limits proportionally to transaction congestion
+	// Generate the fresh elastic transaction resource parameter 
 	dynamicGasLimit := uint64(float64(TargetGasLimit) * demandRatio)
 
 	return dynamicGasLimit
