@@ -10,7 +10,10 @@ import (
 )
 
 var (
+	// DefaultNodeHome configures the default data directory inside user space
 	DefaultNodeHome = "/.mycustoml1"
+	
+	// ModuleBasics initializes the core asset routing and account systems
 	ModuleBasics    = module.NewBasicManager(
 		auth.AppModuleBasic{},
 		bank.AppModuleBasic{},
