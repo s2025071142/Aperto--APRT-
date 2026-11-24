@@ -4,14 +4,19 @@ import (
 	"fmt"
 	"os"
 
-	// Replace with your exact Cosmos SDK / server imports
 	"://github.com"
 	svccmd "://github.com/cmd"
+	"://github.com"
+)
+
+var (
+	// Global merge-mining endpoint configured via CLI flag for pow.go
+	MoneroMergeMineRPC string
 )
 
 func main() {
 	// Construct the root command loop for your daemon interface
-	rootCmd, _ := server.NewRootCmd("mycustoml1d", "l1", "/.mycustoml1", "custom-chain-id", ModuleBasics)
+	rootCmd, _ := server.NewRootCmd("mycustoml1d", "apto", DefaultNodeHome, "aperto-mainnet-1", ModuleBasics)
 
 	// Automatically detect default storage mode ("utxo" for mobile, "pruned" for PC)
 	defaultMode := DetectDefaultStorageMode()
@@ -27,8 +32,13 @@ func main() {
 		1000,
 		"Number of recent blocks to retain when running in 'pruned' mode",
 	)
+	rootCmd.PersistentFlags().String(
+		"xmr-merge-rpc",
+		"http://127.0.0",
+		"Monero daemon RPC endpoint for RandomX merge-mining (AuxPoW)",
+	)
 
-	// Hook into PreRunE to initialize and validate the chosen storage engine
+	// Hook into PreRunE to initialize and validate the chosen storage engine & merge-mining config
 	originalPreRunE := rootCmd.PersistentPreRunE
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		if originalPreRunE != nil {
@@ -39,6 +49,7 @@ func main() {
 
 		modeStr, _ := cmd.Flags().GetString("storage-mode")
 		keepRecent, _ := cmd.Flags().GetUint64("prune-keep-recent")
+		MoneroMergeMineRPC, _ = cmd.Flags().GetString("xmr-merge-rpc")
 
 		cfg, err := NewNodeStorageConfig(modeStr, keepRecent)
 		if err != nil {
@@ -47,12 +58,16 @@ func main() {
 
 		// Store active storage config globally so app.go and abci.go can access it
 		ActiveStorageManager = NewStorageManager(cfg)
-		fmt.Printf("[Aperto Node] Initialized storage mode: %s\n", cfg.Mode)
+		fmt.Printf("[Aperto Node] Storage Mode: %s | Block Target: %v | Lock-In Limit: <%v\n",
+			cfg.Mode,
+			TargetBlockTime,
+			PreSignLockTimeout,
+		)
 		return nil
 	}
 
 	// Execute the lifecycle command engine using variables inherited from package scope
-	if err := svccmd.Execute(rootCmd, "MYCUSTOML1", DefaultNodeHome); err != nil {
+	if err := svccmd.Execute(rootCmd, "APERTO", DefaultNodeHome); err != nil {
 		fmt.Fprintf(os.Stderr, "Error executing blockchain daemon: %v\n", err)
 		os.Exit(1)
 	}
