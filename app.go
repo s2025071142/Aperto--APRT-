@@ -15,7 +15,7 @@ import (
 var (
 	// DefaultNodeHome configures the data state directory for the Aperto network daemon
 	DefaultNodeHome = "/.aperto-aprt"
-	
+
 	// ModuleBasics initializes the underlying accounting and token frameworks safely
 	ModuleBasics = module.NewBasicManager(
 		auth.AppModuleBasic{},
@@ -33,13 +33,29 @@ type QuantumAccount struct {
 type App struct {
 	LegacyAmino *codec.LegacyAmino
 	AppCodec    codec.Codec
+	Storage     *StorageManager // Manages UTXO commitment or Pruned node storage
+}
+
+// NewApp initializes the Aperto application state with the active storage mode
+func NewApp(legacyAmino *codec.LegacyAmino, appCodec codec.Codec) *App {
+	// Ensure ActiveStorageManager is initialized even if launched outside main.go CLI flags
+	if ActiveStorageManager == nil {
+		defaultCfg, _ := NewNodeStorageConfig(string(DetectDefaultStorageMode()), 1000)
+		ActiveStorageManager = NewStorageManager(defaultCfg)
+	}
+
+	return &App{
+		LegacyAmino: legacyAmino,
+		AppCodec:    appCodec,
+		Storage:     ActiveStorageManager,
+	}
 }
 
 // NewQuantumAccount derives a secure local address by hashing the ML-DSA public key coordinates
 func NewQuantumAccount(pubKey mldsa65.PublicKey) *QuantumAccount {
 	pubBytes := pubKey.Bytes()
 	hash := sha256.Sum256(pubBytes)
-	
+
 	return &QuantumAccount{
 		PublicKey: pubKey,
 		Address:   hash[:20], // Standard 20-byte account format derived from quantum public key states
@@ -58,4 +74,3 @@ func VerifyQuantumTransaction(pubKey mldsa65.PublicKey, message []byte, signatur
 func GetBlockTimeTarget() time.Duration {
 	return 30 * time.Second
 }
-
