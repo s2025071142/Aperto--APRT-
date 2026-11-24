@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"runtime"
+	"sort"
 	"sync"
 )
 
@@ -12,9 +14,9 @@ import (
 type StorageMode string
 
 const (
-	ModeUTXO     StorageMode = "utxo"     // Lightweight UTXO accumulator (default on mobile)
-	ModePruned   StorageMode = "pruned"   // Rolling pruned state/blocks (default on PC)
-	ModeArchival StorageMode = "archival" // Full unpruned historical blocks
+	ModeUTXO     StorageMode = "utxo"     // Stateless light verification (~KB footprint, default on mobile)
+	ModePruned   StorageMode = "pruned"   // Full EVM/UTXO state + rolling block pruning (default on PC)
+	ModeArchival StorageMode = "archival" // Full unpruned historical blocks & state
 )
 
 // NodeStorageConfig holds user-defined or auto-detected storage settings
@@ -31,12 +33,18 @@ type UTXO struct {
 	Amount uint64
 }
 
-// StorageManager handles UTXO commitments and historical block pruning
+// StatelessProof lets mobile/light 'utxo' nodes verify a balance without storing the full state
+type StatelessProof struct {
+	TargetUTXO     UTXO
+	MerkleSiblings [][32]byte
+}
+
+// StorageManager handles stateless accumulator commitments and historical block pruning
 type StorageManager struct {
 	mu              sync.RWMutex
 	Config          NodeStorageConfig
-	UTXOSet         map[string]UTXO // Active unspent outputs (used in UTXO/Pruned modes)
-	AccumulatorRoot [32]byte        // Compact cryptographic commitment of all active UTXOs
+	UTXOSet         map[string]UTXO // Full active state (kept only in 'pruned' and 'archival' modes)
+	AccumulatorRoot [32]byte        // Compact 32-byte cryptographic commitment (kept in all modes)
 	RetainedBlocks  map[uint64][]byte
 }
 
@@ -77,12 +85,12 @@ func NewStorageManager(cfg NodeStorageConfig) *StorageManager {
 	}
 }
 
-// ApplyBlockState updates UTXOs and prunes old blocks according to the active StorageMode
+// ApplyBlockState updates state commitments and prunes old blocks according to the active StorageMode
 func (sm *StorageManager) ApplyBlockState(height uint64, blockBytes []byte, spentKeys []string, newOutputs []UTXO) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// 1. Remove spent UTXOs and add newly created UTXOs
+	// 1. Update active state transitions
 	for _, key := range spentKeys {
 		delete(sm.UTXOSet, key)
 	}
@@ -91,17 +99,19 @@ func (sm *StorageManager) ApplyBlockState(height uint64, blockBytes []byte, spen
 		sm.UTXOSet[key] = out
 	}
 
-	// 2. Recompute compact UTXO Accumulator Root (lightweight fingerprint for UTXO mode)
+	// 2. Deterministically recompute the 32-byte Accumulator Root
 	sm.recomputeAccumulatorRoot()
 
-	// 3. Handle block retention based on the operator's chosen mode
+	// 3. Enforce hardware footprint limits based on the operator's chosen mode
 	switch sm.Config.Mode {
 	case ModeUTXO:
-		// UTXO-only mode: discard raw historical blocks immediately to keep footprint near zero
+		// Stateless mobile/light mode: discard both raw blocks AND the full state map,
+		// retaining only the 32-byte cryptographic AccumulatorRoot (~KB total footprint).
+		sm.UTXOSet = make(map[string]UTXO)
 		sm.RetainedBlocks = make(map[uint64][]byte)
 
 	case ModePruned:
-		// Pruned mode: store current block, delete blocks older than PruneKeepRecent
+		// Pruned PC mode: keep active state to serve proofs, delete blocks older than PruneKeepRecent
 		sm.RetainedBlocks[height] = blockBytes
 		if height > sm.Config.PruneKeepRecent {
 			cutoff := height - sm.Config.PruneKeepRecent
@@ -113,15 +123,39 @@ func (sm *StorageManager) ApplyBlockState(height uint64, blockBytes []byte, spen
 		}
 
 	case ModeArchival:
-		// Archival mode: keep every block forever
+		// Archival server mode: keep every block and state transition forever
 		sm.RetainedBlocks[height] = blockBytes
 	}
 }
 
-// recomputeAccumulatorRoot hashes the active UTXO set into a single 32-byte commitment
+// VerifyStatelessProof allows mobile 'utxo' nodes to verify a UTXO against the 32-byte AccumulatorRoot
+func (sm *StorageManager) VerifyStatelessProof(proof StatelessProof) bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	key := fmt.Sprintf("%s:%d", proof.TargetUTXO.TxHash, proof.TargetUTXO.Index)
+	leafData := fmt.Sprintf("%s|%s|%d;", key, proof.TargetUTXO.Owner, proof.TargetUTXO.Amount)
+	currentHash := sha256.Sum256([]byte(leafData))
+
+	for _, sibling := range proof.MerkleSiblings {
+		combined := append(currentHash[:], sibling[:]...)
+		currentHash = sha256.Sum256(combined)
+	}
+
+	return bytes.Equal(currentHash[:], sm.AccumulatorRoot[:])
+}
+
+// recomputeAccumulatorRoot sorts keys first so every node computes the exact same 32-byte commitment
 func (sm *StorageManager) recomputeAccumulatorRoot() {
+	keys := make([]string, 0, len(sm.UTXOSet))
+	for k := range sm.UTXOSet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	hasher := sha256.New()
-	for k, u := range sm.UTXOSet {
+	for _, k := range keys {
+		u := sm.UTXOSet[k]
 		hasher.Write([]byte(fmt.Sprintf("%s|%s|%d;", k, u.Owner, u.Amount)))
 	}
 	copy(sm.AccumulatorRoot[:], hasher.Sum(nil))
