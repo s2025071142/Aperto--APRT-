@@ -1,47 +1,48 @@
 package main
 
 import (
+	"math/big"
+
 	"://github.com"
 )
 
-// CalculateBlockSubsidy determines the miner reward for the current block height.
-// It follows a deterministic 20-year upside-down U (bell curve) that peaks at year 10,
-// then tapers down smoothly until locking into a permanent 0.005 APTO tail emission floor.
+// CalculateBlockSubsidy determines the exact miner reward for a 1-minute block height.
+// Over the first 20 years (10,519,200 blocks), it follows a deterministic upside-down U
+// (bell curve) that mints ~21,000,000 APTO total, peaking at ~2.992 APTO/block at Year 10.
+// After Year 20, it locks into a permanent 0.005 APTO tail emission floor forever.
 func CalculateBlockSubsidy(height int64) types.Coin {
-	// Base units representation (1 APTO = 1,000,000 base units)
-	const BaseUnit uint64 = 1000000
-	const PeakSubsidy uint64 = 50 * BaseUnit  // Maximum reward at the 10-year midpoint
-	const TailEmissionFloor uint64 = 5000     // 0.005 * 1,000,000 = 5,000 base units
+	// Base units representation: 1 APTO = 1,000,000 base units
+	const BaseUnit int64 = 1000000
+	const TailEmissionFloor int64 = 5000 // 0.005 APTO = 5,000 base units
 
-	// Assuming ~2-minute block times (~262,800 blocks/year):
-	// 20-year bell curve spans 5,256,000 blocks, peaking at block 2,628,000 (Year 10).
-	const CurveDurationBlocks int64 = 5256000
-	const PeakHeight int64 = CurveDurationBlocks / 2
+	// 1-minute block time = 525,960 blocks/year (accounting for leap years)
+	// 20-year bell curve duration = 10,519,200 blocks
+	const CurveDurationBlocks int64 = 10519200
+	const PeakHeight int64 = CurveDurationBlocks / 2 // Block 5,259,600 (Year 10)
 
-	// After the 20-year curve completes (or on invalid negative heights), lock at tail floor
+	// Peak bell bonus calibrated so the 20-year integral equals exactly 21,000,000 APTO
+	// Peak total reward = 2,987,024 (bonus) + 5,000 (tail) = 2,992,024 base units (~2.992 APTO)
+	const PeakBellBonus int64 = 2987024
+
+	// Before block 1 or once the 20-year curve completes, return the permanent 0.005 APTO tail floor
 	if height <= 0 || height >= CurveDurationBlocks {
-		return types.NewCoin("native", types.NewInt(int64(TailEmissionFloor)))
+		return types.NewCoin("apto", types.NewInt(TailEmissionFloor))
 	}
 
-	// Deterministic upside-down U formula using Cosmos SDK fixed-point decimals (no floats):
-	// Progress factor: 1 - ((height - PeakHeight) / PeakHeight)^2
-	// Equals 0 at block 0, rises smoothly to 1.0 at PeakHeight (Year 10), and returns to 0 at Year 20.
-	hDec := types.NewDec(height)
-	peakDec := types.NewDec(PeakHeight)
+	// Deterministic exact integer parabola using math/big (prevents 64-bit integer overflow):
+	// bonus = PeakBellBonus * height * (CurveDurationBlocks - height) / (PeakHeight^2)
+	h := big.NewInt(height)
+	rem := big.NewInt(CurveDurationBlocks - height)
+	peakBonus := big.NewInt(PeakBellBonus)
 
-	offset := hDec.Sub(peakDec).Quo(peakDec)
-	bellFactor := types.OneDec().Sub(offset.Mul(offset))
+	peakH := big.NewInt(PeakHeight)
+	peakHSquared := new(big.Int).Mul(peakH, peakH)
 
-	// Scale the reward range between TailEmissionFloor and PeakSubsidy
-	rewardRange := types.NewDec(int64(PeakSubsidy - TailEmissionFloor))
-	scaledBonus := rewardRange.Mul(bellFactor).TruncateInt64()
+	numerator := new(big.Int).Mul(peakBonus, h)
+	numerator.Mul(numerator, rem)
 
-	currentSubsidy := TailEmissionFloor + uint64(scaledBonus)
+	bonus := new(big.Int).Div(numerator, peakHSquared).Int64()
+	totalSubsidy := TailEmissionFloor + bonus
 
-	// Enforce the permanent minimum tail emission subsidy floor
-	if currentSubsidy < TailEmissionFloor {
-		currentSubsidy = TailEmissionFloor
-	}
-
-	return types.NewCoin("native", types.NewInt(int64(currentSubsidy)))
+	return types.NewCoin("apto", types.NewInt(totalSubsidy))
 }
